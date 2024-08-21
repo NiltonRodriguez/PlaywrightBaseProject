@@ -35,7 +35,7 @@ test.beforeEach(async ({}, testInfo) => {
   // Assing a string with the path to save the test results.
   resultPath = `./test-results/test-file-name-Test-Suite-Name-${testName.join('-')}-browser`;
   // Initialize a logger to save logs and assertion results.
-  logger = loggerSetup(resultPath);
+  logger = await loggerSetup(resultPath);
   // Initialize the test steps at 1. If its used in a test.step in the beforeEach, the following steps should continue the sequence.
   step = 1;
 })
