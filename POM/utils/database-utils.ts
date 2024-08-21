@@ -14,8 +14,10 @@ import { MongoClient } from "mongodb";
 export async function connectToMongoDB(connectionString: string) {
     let mongoDBClient;
     try {
-        mongoDBClient = new MongoClient(connectionString);
         console.log('Connecting to MongoDB...');
+        mongoDBClient = new MongoClient(connectionString, { useUnifiedTopology: true });
+        await mongoDBClient.connect();
+        console.log('Connected to MongoDB established...');
     } catch (error) {
         console.error('Error trying to connect to MongoDB:', error);
         // If the connection fails, raise an error to make the test fail.
@@ -36,10 +38,15 @@ export async function connectToMongoDB(connectionString: string) {
  */
 
 export async function closeMongoDBConnection(mongoDBCclient: MongoClient) {
-  if (mongoDBCclient) {
-    await mongoDBCclient.close();
-    console.log('Connection to MongoDB closed...');
-  }
+    if (mongoDBCclient) {
+        try {
+            await mongoDBCclient.close();
+            console.log('Connection to MongoDB closed...');
+        } catch (error) {
+            console.error('Error closing MongoDB connection:', error);
+            throw error;
+        }
+    }
 }
 
 /**
@@ -56,13 +63,14 @@ export async function connectToOracleDB(username: string, password: string, conn
     let oracleDBConnection: oracledb.Connection;
     oracledb.fetchAsString = [ oracledb.CLOB ]
     try {
+        console.log('Connecting to OracleDB...');
         // Setup the connection info.
         oracleDBConnection = await oracledb.getConnection({
             user: username,
             password: password,
             connectString: connectionString
         });
-        console.log('Connecting to OracleDB...');
+        console.log('Connection to OracleDB established...');
     } catch (error) {
         console.error('Error trying to connect to OracleDB:', error);
         // If the connection fails, raise an error to make the test fail.
@@ -81,7 +89,12 @@ export async function connectToOracleDB(username: string, password: string, conn
  */
 export async function closeOracleDBConnection(connection: oracledb.Connection) {
     if (connection) {
-        await connection.close();
-        console.log('Connection to OracleDB closed...');
+        try {
+            await connection.close();
+            console.log('Connection to OracleDB closed...');
+        } catch (error) {
+            console.error('Error closing OracleDB connection:', error);
+            throw error;
+        }
     }
 }
