@@ -51,11 +51,11 @@ export class AzureUtils {
     private readonly testCases: string[];
     private runId: number;
     private testCasesInfo: TestCasesInfo = {};
-    private readonly headers: {};
+    private readonly headers: Record<string, string>;
     private readonly azureBaseUrl: string;
-    private runAttatchments: AttachmentData[];
+    private runAttachments: AttachmentData[];
 
-    constructor(planId: number, suiteId: number, testCasesId: string[]){
+    constructor(planId: number, suiteId: number, testCasesId: string[]) {
         this.organization = `${process.env.AZURE_ORGANIZATION}`;
         this.project = `${process.env.AZURE_PROJECT}`;
         this.pat = `Basic ${Buffer.from(`:${process.env.AZURE_PAT}`).toString('base64')}`;
@@ -68,10 +68,10 @@ export class AzureUtils {
             'Content-Type': 'application/json',
             Authorization: this.pat,
         };
-        this.runAttatchments = [];
+        this.runAttachments = [];
     };
 
-    private getTestCaseResultData(testCaseId: string){
+    private getTestCaseResultData(testCaseId: string) {
         const testCaseResultData = this.testCasesInfo[testCaseId].testResultData;
         if (!testCaseResultData){
             throw new ReferenceError(`Test case data for ID ${testCaseId} does not exist.`);
@@ -89,60 +89,65 @@ export class AzureUtils {
 
     /**
      * Make a request to the Azure DevOps Run API to obtain the run results details.
-     * Then assign the result details to the testResultData attribute of each test case in te property testCasesInfo.
+     * Then assign the result details to the testResultData attribute of each test case in the property testCasesInfo.
      */
-    private async assignResultFromRun(){
+    private async assignResultFromRun(): Promise<void> {
         const url = `${this.azureBaseUrl}/test/Runs/${this.runId}/results?detailsToInclude=WorkItems&$top=100&api-version=7.1-preview.6`;
-        const body = await apiRequest(url, {
-            method: 'GET',
-            headers: this.headers
-        });
         try {
-            body.value.forEach(value => {
+            const body = await apiRequest(url, {
+                method: 'GET',
+                headers: this.headers
+            });
+            const results = body.value || [];
+            for (const value of results) {
                 const testCaseId = value.testCase.id;
                 const testResultData: TestResultData = {
                     id: value.id,
                     state: value.state,
                     comment: 'Automated run with Playwright',
-                    iterationDetails: [
-                        {
-                            id: 1,
-                            startedDate: new Date(value.startedDate),
-                            completedDate: new Date(value.completedDate),
-                            actionResults: []
-                        }
-                    ]
+                    iterationDetails: [{
+                        id: 1,
+                        startedDate: new Date(value.startedDate),
+                        completedDate: new Date(value.completedDate),
+                        actionResults: []
+                    }]
                 };
-                if (!this.testCasesInfo[testCaseId]){
+                if (!this.testCasesInfo[testCaseId]) {
                     throw new ReferenceError(`Iteration data for ID ${testCaseId} does not exist.`);
                 }
                 this.testCasesInfo[testCaseId].testResultData = testResultData;
-            });
+            }
         } catch (error) {
             throw new TypeError(`Error in the assignment of the test result data: ${error}`);
         }
     }
 
     /**
-     * Cast the attachments to base64 and the format tor the attachment request.
-     * @param testCaseId Convert 
+     * Cast the attachments to base64 and format for the attachment request.
+     * @param testCaseId 
      * @param path 
      * @returns Array with the attachment data.
      */
-    private async convertAttachmentsToBase64(testCaseId: string, path: string){
-        let attachmentFiles: AttachmentData[] = [];
-        const filesFound = await getFiles(path)
-        filesFound.forEach(file => {
-            let attachment: AttachmentData = {
-                stream: fileToBase64(`${path}/${file}`),
-                fileName: `${testCaseId} - ${file}`,
-                comment: 'Playwright automation attachment',
-                attachmentType: 'GeneralAttachment'
-            }
-            attachmentFiles.push(attachment);
-            this.runAttatchments.push(attachment);
-        });
-        return attachmentFiles;
+    private async convertAttachmentsToBase64(testCaseId: string, path: string): Promise<AttachmentData[]> {
+        try {
+            const filesFound = await getFiles(path);
+            const attachmentPromises = filesFound.map(async (file) => {
+                const base64Data = await fileToBase64(`${path}/${file}`);
+                return {
+                    stream: base64Data,
+                    fileName: `${testCaseId} - ${file}`,
+                    comment: 'Playwright automation attachment',
+                    attachmentType: 'GeneralAttachment'
+                };
+            });
+
+            const attachmentFiles = await Promise.all(attachmentPromises);
+            this.runAttachments.push(...attachmentFiles);
+            return attachmentFiles;
+        } catch (error) {
+            console.error('Error converting attachments to base64:', error);
+            throw error;
+        }
     }
     
     /**
@@ -154,7 +159,11 @@ export class AzureUtils {
     async createTestRun() {
         await this.getPointsId();
         const pointIds = Object.values(this.testCasesInfo).map(testCaseData => testCaseData.pointId);
-        const requestBody = {'name': 'Playwright automated test run','plan': {'id': String(this.planId)}, 'pointIds': pointIds};
+        const requestBody = {
+            'name': 'Playwright automated test run',
+            'plan': {'id': String(this.planId)},
+            'pointIds': pointIds
+        };
         const url = `${this.azureBaseUrl}/test/runs?api-version=7.1-preview.2`;
         try {
             const body = await apiRequest(url, {
@@ -171,16 +180,15 @@ export class AzureUtils {
     }
 
     /**
-     * Test Point:
+     * Get the pointId for the given test cases.
      * A test point is a unique combination of test case, test suite, configuration, and tester and is used to create a Test Run.
-     * This function get the pointId for the given test cases.
      */
-    private async getPointsId() {
-        for (const testCase of this.testCases) {
+    private async getPointsId(): Promise<void> {
+        const promises = this.testCases.map(async (testCase) => {
             const url = `${this.azureBaseUrl}/test/Plans/${this.planId}/suites/${this.suiteId}/points?api-version=7.1-preview.2&testCaseId=${testCase}&$top=1`;
             try {
                 // Make the request to obtain the point ID of each given test case.
-                const body  = await apiRequest(url, {
+                const body = await apiRequest(url, {
                     method: 'GET',
                     headers: this.headers
                 });
@@ -189,14 +197,15 @@ export class AzureUtils {
                     this.testCasesInfo[testCase] = {
                         pointId: body.value[0].id,
                         testResultData: {}
-                     };
+                    };
                 } else {
-                    throw new ReferenceError(`Error in the asignment of pointId for test case ${testCase}`);
+                    throw new ReferenceError(`Error assigning pointId for test case ${testCase}`);
                 }
             } catch (error) {
                 throw new TypeError(`Error fetching data for test case ${testCase}: ${error}`);
             }
-        }  
+        });
+        await Promise.all(promises);
     }
 
     /**
@@ -204,16 +213,17 @@ export class AzureUtils {
      * @param url 
      * @param attachmentsPath
      */
-    private async sendTestResultAttachments(testCaseId: string, attachmentsPath: string){
+    private async sendTestResultAttachments(testCaseId: string, attachmentsPath: string): Promise<void> {
         const attachments = await this.convertAttachmentsToBase64(testCaseId, attachmentsPath);
         const url = `${this.azureBaseUrl}/test/Runs/${this.runId}/Results/${this.testCasesInfo[testCaseId].testResultData?.id}/attachments?api-version=7.1-preview.1`
-        for await (const attachment of attachments) {
+        const attachmentPromises = attachments.map(async (attachment) => {
             await apiRequest(url, {
                 method: 'POST',
                 headers: this.headers,
                 body: attachment
             });
-        }
+        });
+        await Promise.all(attachmentPromises);
     }
 
     /**
@@ -221,64 +231,49 @@ export class AzureUtils {
      * @param url 
      * @param attachments 
      */
-    private async sendTestRunAttachments(){
+    private async sendTestRunAttachments(): Promise<void> {
         const url = `${this.azureBaseUrl}/test/Runs/${this.runId}/attachments?api-version=7.1-preview.1`
-        for await (const attachment of this.runAttatchments) {
+        const attachmentPromises = this.runAttachments.map(async (attachment) => {
             await apiRequest(url, {
                 method: 'POST',
                 headers: this.headers,
                 body: attachment
             });
-        }
+        });
+        await Promise.all(attachmentPromises);
     }
 
     /**
-     * Convert Test to Action Path.
+     * Convert Test Step to Action Path.
      * @param testStep 
-     * @returns 
+     * @returns Action Path 
      */
-    private testStepToActionPath(testStep: number){
-        let actionPath = 1 + testStep;    
-        let newActionPath = actionPath.toString();
-        while (newActionPath.length < 8) {
-            newActionPath = '0' + newActionPath;
-        }  
-        return newActionPath;
+    private testStepToActionPath(testStep: number): string {
+        return (1 + testStep).toString().padStart(8, '0');
     }
 
     /**
-     * Update the test case Work Item to state Ready and reason Completed if the test result is passed
+     * Update the test case Work Item to state Ready and reason Completed if the test result is passed.
      * @param testCaseId 
      * @param outcome 
      */
-    private async updateTestCaseBacklogStatus(testCaseId: string, outcome: string){
-        const url = `${this.azureBaseUrl}/wit/workitems/${testCaseId}?api-version=7.1-preview.3`
-        let state: string = "Design";
-        let history: string = "Playwright automation failed for this test case";
-        if (outcome === 'passed'){
-            state = "Ready";
-            history = "Playwright automation execution finished succesfully";
+    private async updateTestCaseBacklogStatus(testCaseId: string, outcome: string): Promise<void> {
+        const url = `${this.azureBaseUrl}/wit/workitems/${testCaseId}?api-version=7.1-preview.3`;
+        const state = outcome === 'passed' ? "Ready" : "Design";
+        const history = outcome === 'passed' ? "Playwright automation execution finished successfully" : "Playwright automation failed for this test case";
+        const requestBody = [
+            { "op": "replace", "path": "/fields/System.State", "value": state },
+            { "op": "add", "path": "/fields/System.History", "value": history }
+        ];
+        try {
+            await apiRequest(url, {
+                method: 'PATCH',
+                headers: { ...this.headers, 'Content-Type': 'application/json-patch+json' },
+                body: requestBody
+            });
+        } catch (error) {
+            throw new TypeError(`Error updating backlog status for test case ${testCaseId}: ${error}`);
         }
-        const headers = {
-            'Content-Type': 'application/json-patch+json',
-            Authorization: this.pat
-        };
-        await apiRequest(url, {
-            method: 'PATCH',
-            headers: headers,
-            body: [
-                {
-                    "op": "replace",
-                    "path": "/fields/System.State",
-                    "value": state
-                },
-                {
-                    "op": "add",
-                    "path": "/fields/System.History",
-                    "value": history
-                }
-            ]
-        });
     }
     
     /**
@@ -292,20 +287,25 @@ export class AzureUtils {
      * @param testCaseId 
      * @param outcome 
      */
-    async updateTestCaseResult(testCaseId: string, outcome: string, path: string){
+    async updateTestCaseResult(testCaseId: string, outcome: string, path: string) {
+        const url = `${this.azureBaseUrl}/test/Runs/${this.runId}/results?api-version=7.1-preview.6`;
         const testCaseResultData = this.getTestCaseResultData(testCaseId);
         const iterationDetail = this.getIterationDetail(testCaseId);
         testCaseResultData.state = "Completed";
         testCaseResultData.outcome = outcome;
         iterationDetail[0].outcome = outcome;
-        const url = `${this.azureBaseUrl}/test/Runs/${this.runId}/results?api-version=7.1-preview.6`;
-        await apiRequest(url, {
-            method: 'PATCH',
-            headers: this.headers,
-            body: [testCaseResultData]
-        });
-        await this.sendTestResultAttachments(testCaseId, path)
-        await this.updateTestCaseBacklogStatus(testCaseId, outcome);
+        
+        try {
+            await apiRequest(url, {
+                method: 'PATCH',
+                headers: this.headers,
+                body: [testCaseResultData]
+            });
+            await this.sendTestResultAttachments(testCaseId, path);
+            await this.updateTestCaseBacklogStatus(testCaseId, outcome);
+        } catch (error) {
+            throw new TypeError(`Error updating test case result for ID ${testCaseId}: ${error}`);
+        }
     }
 
     /**
@@ -314,13 +314,13 @@ export class AzureUtils {
      * @param testStep 
      * @param outcome 
      */
-    updateTestStepResult(testCaseId: string, testStep: number, outcome: string){
+    updateTestStepResult(testCaseId: string, testStep: number, outcome: string) {
         const actionPath = this.testStepToActionPath(testStep);
         const iterationDetail = this.getIterationDetail(testCaseId)[0];
         if (!iterationDetail) {
             throw new ReferenceError(`Action result with actionPath ${actionPath} not found.`);
         }
-        let actionResults: ActionResult = { 
+        const actionResults: ActionResult = { 
             actionPath: actionPath,
             iterationId: iterationDetail.id,
             stepIdentifier: String(testStep),
@@ -336,14 +336,20 @@ export class AzureUtils {
      */
     async updateTestRunResult(){
         const url = `${this.azureBaseUrl}/test/runs/${this.runId}?api-version=7.1-preview.3`
-        await apiRequest(url, {
-            method: 'Patch',
-            headers: this.headers,
-            body: {
-                "state": "Completed", //NotStarted, InProgress, Completed, Aborted, Waiting
-                "comment": "Playwright automation finished"
-            }
-        })
-        await this.sendTestRunAttachments()
+        const requestBody = {
+            "state": "Completed", //NotStarted, InProgress, Completed, Aborted, Waiting
+            "comment": "Playwright automation finished"
+        }
+        try{
+            await apiRequest(url, {
+                method: 'Patch',
+                headers: this.headers,
+                body: requestBody
+            })
+            await this.sendTestRunAttachments()
+        } catch (error) {
+            throw new TypeError(`Error updating test run result: ${error}`);
+        }
+        
     }
 }
