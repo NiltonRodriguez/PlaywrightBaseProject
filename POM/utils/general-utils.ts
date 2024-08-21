@@ -1,5 +1,6 @@
 import { expect, Locator, Page, TestInfo } from "@playwright/test";
 import fs from "fs";
+import { promises as fsPromises } from 'fs';
 import { AssertionError } from 'assert';
 
 /**
@@ -8,12 +9,12 @@ import { AssertionError } from 'assert';
  * @param option 
  * @returns Json response body
  */
-export async function apiRequest(url: string, option?: {method?, headers?, body?}) {
+export async function apiRequest(url: string, option?: {method?, headers?: Record<string, string>, body?}) {
     try {
         const response = await fetch(url, {
             method: option?.method,
             headers: option?.headers,
-            body: JSON.stringify(option?.body)
+            body: option?.body ? JSON.stringify(option.body) : undefined
         });
         if(!response.ok){
             throw new Error(`API request failed to ${url}. Status Code: ${response.status} Response: ${await response.text()}`);
@@ -29,7 +30,7 @@ export async function apiRequest(url: string, option?: {method?, headers?, body?
 /**
  * Attach the assertion text file to the playwright report.
  */
-export async function attachAssertionFileToReport(testInfo: TestInfo, path: string){
+export async function attachAssertionFileToReport(testInfo: TestInfo, path: string) {
     await testInfo.attach('AssertionResults', { contentType: 'text/plain', path: `${path}/AssertionResults.txt` });
 }
 
@@ -37,13 +38,11 @@ export async function attachAssertionFileToReport(testInfo: TestInfo, path: stri
  * Check if a directory exists, otherwise create the directory.
  * @param path 
  */
-export function createDirectory(path: string) {
+export async function createDirectory(path: string) {
     try {
-        if (!fs.existsSync(path)) {
-            fs.mkdirSync(path);
-        }
+        await fsPromises.mkdir(path, { recursive: true });
     } catch (error) {
-        console.error(error);
+        console.error('Error creating directory:', error);
         throw error;
     }
 }
@@ -57,7 +56,8 @@ export function createDirectory(path: string) {
  * @param expectedText 
  */
 export async function inputValueAssertion(locator: Locator, expectedText: string, logger: fs.WriteStream) {
-    const message = `ASSERTION RESULT:\n Expected: ${expectedText} \n Obtained: ${await locator.inputValue()}`;
+    const actualValue = await locator.inputValue();
+    const message = `ASSERTION RESULT:\n Expected: ${expectedText} \n Obtained: ${actualValue}`;
     writeLog(message, logger);
     await expect(locator).toHaveValue(expectedText);
 }
@@ -67,20 +67,28 @@ export async function inputValueAssertion(locator: Locator, expectedText: string
  * @param filePath.
  * @returns base64 string.
  */
-export function fileToBase64(filePath: string) {
-    const data = fs.readFileSync(filePath);
+export async function fileToBase64(filePath: string): Promise<string> {
+    const data = await fsPromises.readFile(filePath);
     return data.toString('base64');
 }
 
-/**
- * Return the path for all the files found in a directory.
- * @param path
- * @returns string[] with the found files.
- */
 export async function getFiles(path: string): Promise<string[]> {
-    return fs.readdirSync(path).filter(
-        (file) => fs.lstatSync(`${path}/${file}`).isFile()
-    );
+    try {
+        // Read directory files asyncronous.
+        const files = await fsPromises.readdir(path);    
+        // Filter files.
+        const fileStats = await Promise.all(
+            files.map(async (file) => {
+                const filePath = `${path}/${file}`;
+                const stats = await fsPromises.lstat(filePath);
+                return { fileName: file, isFile: stats.isFile() };
+            })
+        );
+        return fileStats.filter(fileStat => fileStat.isFile).map(fileStat => fileStat.fileName);
+    } catch (error) {
+        console.error('Error reading directory:', error);
+        throw error;
+    }
 }
 
 /**
@@ -120,7 +128,8 @@ export function literalValuesAssertion(obtainedValue: any, expectedValue: any, l
  * @param expectedText 
  */
 export async function locatorTextAssertion(locator: Locator, expectedText: string, logger: fs.WriteStream) {
-    const message = `ASSERTION RESULT:\n Expected: ${expectedText} \n Obtained: ${await locator.innerText()}`
+    const actualText = await locator.innerText();
+    const message = `ASSERTION RESULT:\n Expected: ${expectedText} \n Obtained: ${actualText}`;
     writeLog(message, logger);
     await expect(locator).toContainText(expectedText);
 }
@@ -129,8 +138,8 @@ export async function locatorTextAssertion(locator: Locator, expectedText: strin
  * Create the logger: fs.WriteStream in the specified folder.
  * @param path 
  */
-export function loggerSetup(path: string) {
-    createDirectory(path);
+export async function loggerSetup(path: string): Promise<fs.WriteStream> {
+    await createDirectory(path);
     return fs.createWriteStream(`${path}/AssertionResults.txt`, { flags: 'a' });
 }
 
@@ -143,16 +152,31 @@ export function loggerSetup(path: string) {
  * @param page 
  * @param path 
  */
-export async function takeScreenshot(testInfo: TestInfo, page: Page, path: string){
+export async function takeScreenshot(testInfo: TestInfo, page: Page, path: string) {
     const screenshot = await page.screenshot({ path: path, fullPage: true });
     await testInfo.attach('screenshot', { body: screenshot, contentType: 'image/png' });
+}
+
+/**
+ * Read a JSON file and return data value corresponding to the given JSON text .
+ * @param path
+ * @return JSON data 
+ */
+export async function readJsonFile(path: string): Promise<any> {
+    try {
+        const data = await fsPromises.readFile(path, 'utf8');
+        return JSON.parse(data);
+    } catch (err) {
+        console.error(`Error reading or parsing ${path}:`, err);
+        throw err;
+    }
 }
 
 /**
  * 
  * @param options 
  */
-export function throwAssertException(message?: any){
+export function throwAssertException(message?: any) {
     throw new AssertionError({ 
         message: `Test Failed: ${message}`
     });
